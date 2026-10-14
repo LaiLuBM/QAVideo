@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------------------
+# "standalone" profile: run the whole platform with zero external middleware.
+#   mvnw spring-boot:run -Dspring-boot.run.profiles=standalone
+# MySQL -> H2 (MySQL compatibility mode), Redis -> in-memory store,
+# RocketMQ -> local async executor, DeepSeek -> local fallback summarizer.
+# Use it for a demo or a smoke test; production uses the default profile.
+# ---------------------------------------------------------------------------
+spring:
+  datasource:
+    url: jdbc:h2:mem:qavideo;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+    hikari:
+      maximum-pool-size: 8
+  # 该 profile 用 Hibernate 建 H2 表，不执行 MySQL 专用 DDL
+  sql:
+    init:
+      mode: never
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+
+qavideo:
+  redis:
+    enabled: false
+  mq:
+    enabled: false
+  transcript:
+    demo-enabled: true
+  ai:
+    mock-when-no-key: true
+
+logging:
+  level:
+    org.hibernate.SQL: INFO

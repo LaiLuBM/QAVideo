@@ -1,0 +1,94 @@
+# ---------------------------------------------------------------------------
+# QAVideo 中间件一键启动：MySQL + Redis + RocketMQ(NameServer/Broker/Dashboard)
+#
+#   docker compose up -d
+#   docker compose logs -f rmqbroker
+#
+# 启动后使用 production 语义的配置运行后端（默认 profile）：
+#   QVIDEO_REDIS_ENABLED=true QVIDEO_MQ_ENABLED=true mvnw spring-boot:run
+# ---------------------------------------------------------------------------
+name: qavideo
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: qavideo-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: qavideo
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    ports:
+      - '3306:3306'
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 首次启动自动执行建表脚本（与 backend 的 JPA 实体一一对应）
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost', '-uroot', '-proot']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: qavideo-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory', '512mb', '--maxmemory-policy', 'allkeys-lru']
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  rmqnamesrv:
+    image: apache/rocketmq:5.3.1
+    container_name: qavideo-rmqnamesrv
+    restart: unless-stopped
+    command: sh mqnamesrv
+    ports:
+      - '9876:9876'
+    # 不挂命名卷：镜像以 uid 3000(rocketmq) 运行，而镜像内没有 /home/rocketmq/logs，
+    # 空命名卷会以 root 属主挂上去，导致容器写不了日志目录。
+    # 需要长期保存日志时，改挂一个属主正确的宿主机目录。
+
+  rmqbroker:
+    image: apache/rocketmq:5.3.1
+    container_name: qavideo-rmqbroker
+    restart: unless-stopped
+    depends_on:
+      - rmqnamesrv
+    environment:
+      NAMESRV_ADDR: rmqnamesrv:9876
+    command: sh mqbroker -c /home/rocketmq/conf/broker.conf
+    ports:
+      - '10909:10909'
+      - '10911:10911'
+      - '10912:10912'
+    volumes:
+      # 只读挂载 broker 配置；store/log 目录交给容器自己创建（属主才正确）
+      - ./docker/rocketmq/broker.conf:/home/rocketmq/conf/broker.conf:ro
+
+  rmqdashboard:
+    image: apacherocketmq/rocketmq-dashboard:latest
+    container_name: qavideo-rmqdashboard
+    restart: unless-stopped
+    depends_on:
+      - rmqnamesrv
+    environment:
+      JAVA_OPTS: '-Drocketmq.namesrv.addr=rmqnamesrv:9876'
+    ports:
+      # 8180 -> 控制台（默认后端占用 8080，避免冲突）
+      - '8180:8080'
+
+volumes:
+  mysql-data:
+  redis-data:

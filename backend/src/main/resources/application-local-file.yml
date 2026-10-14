@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# "local-file" profile: no Docker, no MySQL/Redis/RocketMQ, but data persists.
+#
+#   mvnw spring-boot:run "-Dspring-boot.run.profiles=local-file"
+#
+# 相比 standalone（H2 内存库，重启即清空），这个 profile 把 H2 落到本地文件，
+# 重启后视频库/解析结果仍在，适合没有 Docker 又想长期试用的情况。
+#
+# 数据文件：backend/data/h2/qavideo.mv.db（删除该目录即重置数据库）
+# 需要真正的 MySQL 生产配置请使用默认 profile（见 application.yml）。
+# ---------------------------------------------------------------------------
+spring:
+  datasource:
+    url: jdbc:h2:file:./data/h2/qavideo;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;AUTO_SERVER=TRUE
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+    hikari:
+      maximum-pool-size: 8
+      minimum-idle: 1
+  # 该 profile 用 Hibernate 建 H2 表，不执行 MySQL 专用 DDL
+  sql:
+    init:
+      mode: never
+  jpa:
+    hibernate:
+      # 文件库要保留历史数据，不能用 create-drop
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+
+qavideo:
+  redis:
+    enabled: false
+  mq:
+    enabled: false
+  transcript:
+    demo-enabled: true
+  ai:
+    mock-when-no-key: true

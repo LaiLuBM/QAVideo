@@ -1,0 +1,4 @@
+# Spring Boot failure analyzers: turn common startup failures into actionable advice.
+# (FailureAnalyzer registration still lives in spring.factories in Spring Boot 3.x.)
+org.springframework.boot.diagnostics.FailureAnalyzer=\
+com.qavideo.common.DatabaseUnavailableFailureAnalyzer

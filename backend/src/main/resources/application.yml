@@ -1,0 +1,166 @@
+server:
+  port: ${SERVER_PORT:8080}
+  compression:
+    enabled: true
+    mime-types: application/json,text/html,text/plain
+    min-response-size: 2048
+
+spring:
+  application:
+    name: qavideo
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:default}
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+  mvc:
+    async:
+      request-timeout: 60s
+  # ---- MySQL: video metadata + dedup keys -------------------------------
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/qavideo?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false&rewriteBatchedStatements=true}
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:root}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 16
+      minimum-idle: 4
+      connection-timeout: 10000
+      pool-name: qavideo-pool
+  jpa:
+    open-in-view: false
+    hibernate:
+      # MySQL 的表结构由 db/schema-mysql.sql 权威定义（应用启动时自动执行，可重复执行）。
+      # 必须用 none：Hibernate 6.6 的 MySQLDialect 会把 LOB 列渲染成 tinytext，
+      # 并在 ddl-auto=update 时 ALTER 掉已经正确的 longtext 列（见该 SQL 文件头部说明）。
+      ddl-auto: none
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: Asia/Shanghai
+          batch_size: 50
+        order_inserts: true
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/schema-mysql.sql
+      continue-on-error: false
+  # ---- Redis: resumable upload state, distributed lock, summary cache ----
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: 3s
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+  servlet:
+    multipart:
+      max-file-size: 2GB
+      max-request-size: 2GB
+      file-size-threshold: 2MB
+
+# ---- RocketMQ: async parse jobs (see mq.enabled below) -------------------
+rocketmq:
+  name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+  producer:
+    group: ${ROCKETMQ_PRODUCER_GROUP:qavideo-producer}
+    send-message-timeout: 5000
+    retry-times-when-send-failed: 2
+
+logging:
+  level:
+    root: INFO
+    com.qavideo: DEBUG
+    org.apache.rocketmq: WARN
+
+# ========================================================================
+# Application settings
+# ========================================================================
+qavideo:
+  storage:
+    # Where merged video files live (content addressed: {root}/yyyy/MM/{sha256}.{ext})
+    root: ${QVIDEO_STORAGE_ROOT:./data/storage}
+    # Where in-flight chunk uploads live (redis + this dir = resumable upload)
+    temp-root: ${QVIDEO_UPLOAD_TEMP_ROOT:./data/uploads}
+  upload:
+    chunk-size: ${QVIDEO_CHUNK_SIZE:5242880}
+    max-file-size: ${QVIDEO_MAX_FILE_SIZE:2147483648}
+    session-ttl: ${QVIDEO_UPLOAD_TTL:24h}
+    cleanup-cron: "0 0 * * * *"
+  redis:
+    enabled: ${QVIDEO_REDIS_ENABLED:false}
+  mq:
+    enabled: ${QVIDEO_MQ_ENABLED:false}
+    topic: ${QVIDEO_MQ_TOPIC:qavideo-parse-topic}
+    consumer-group: ${QVIDEO_MQ_CONSUMER_GROUP:qavideo-parse-consumer}
+  ai:
+    # DeepSeek is OpenAI-API compatible, so LangChain4j's OpenAI client drives it.
+    provider: deepseek
+    base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com/v1}
+    api-key: ${DEEPSEEK_API_KEY:}
+    model: ${DEEPSEEK_MODEL:deepseek-chat}
+    temperature: ${DEEPSEEK_TEMPERATURE:0.3}
+    timeout: ${DEEPSEEK_TIMEOUT:120s}
+    max-retries: ${DEEPSEEK_MAX_RETRIES:2}
+    log-requests: false
+    log-responses: false
+    # When no API key is configured the pipeline still runs, using a local
+    # extractive summarizer, so the full flow can be demoed offline.
+    mock-when-no-key: true
+    # Max characters of transcript handed to the LLM.
+    max-transcript-chars: 16000
+  # ---- Speech recognition (DeepSeek is text-only, so audio needs a transcript) ----
+  asr:
+    # none = 关闭（走占位文本/字幕文件） | openai = 兼容 OpenAI 的转写接口 | command = 本地 CLI
+    provider: ${QVIDEO_ASR_PROVIDER:none}
+    # OpenAI 兼容端点，例如 OpenAI / 硅基流动 / 自建 faster-whisper-server
+    base-url: ${QVIDEO_ASR_BASE_URL:https://api.openai.com/v1}
+    api-key: ${QVIDEO_ASR_API_KEY:}
+    model: ${QVIDEO_ASR_MODEL:whisper-1}
+    language: ${QVIDEO_ASR_LANGUAGE:zh}
+    timeout: ${QVIDEO_ASR_TIMEOUT:600s}
+    # 云接口普遍限制上传体积（OpenAI 为 25MB）；超出时提示改用本地引擎
+    max-file-size: ${QVIDEO_ASR_MAX_FILE_SIZE:26214400}
+    # command 模式期望产出的字幕格式
+    output-format: ${QVIDEO_ASR_OUTPUT_FORMAT:srt}
+    # command 模式命令模板，占位符 {file} {outDir} {language}；示例：
+    #   whisper --model small --language {language} --output_format srt --output_dir {outDir} {file}
+    command: ${QVIDEO_ASR_COMMAND:}
+  # ---- Visual understanding: frames -> vision model (for videos without speech) ----
+  vision:
+    # none = 关闭 | openai = 兼容 OpenAI 的视觉模型（GPT-4o / 通义千问 qwen-vl / 智谱 GLM-4V / 硅基流动）
+    provider: ${QVIDEO_VISION_PROVIDER:none}
+    base-url: ${QVIDEO_VISION_BASE_URL:https://api.openai.com/v1}
+    api-key: ${QVIDEO_VISION_API_KEY:}
+    model: ${QVIDEO_VISION_MODEL:gpt-4o-mini}
+    # 最多抽多少帧（每帧=一次图片输入，直接影响花费）
+    max-frames: ${QVIDEO_VISION_MAX_FRAMES:8}
+    # 0 = 按视频时长自动均分
+    frame-interval-seconds: ${QVIDEO_VISION_FRAME_INTERVAL:0}
+    image-max-width: ${QVIDEO_VISION_IMAGE_WIDTH:640}
+    batch-size: ${QVIDEO_VISION_BATCH_SIZE:4}
+    timeout: ${QVIDEO_VISION_TIMEOUT:180s}
+    ffmpeg-path: ${QVIDEO_FFMPEG_PATH:ffmpeg}
+    ffprobe-path: ${QVIDEO_FFPROBE_PATH:ffprobe}
+    prompt: ${QVIDEO_VISION_PROMPT:}
+  transcript:
+    # Try "<video>.srt/.vtt/.txt" next to the stored file first (real ASR output).
+    sidecar-enabled: true
+    # Fall back to a generated placeholder transcript when nothing else is available.
+    demo-enabled: true
+  media:
+    # Direct .mp4/.webm/.m3u8 URLs are downloaded for transcription; page URLs
+    # (YouTube/Bilibili/...) are summarized from link metadata only.
+    download-enabled: true
+    max-download-size: ${QVIDEO_MAX_DOWNLOAD_SIZE:1073741824}
+    connect-timeout: 10s
+    read-timeout: 60s
+    user-agent: "Mozilla/5.0 (compatible; QAVideo/1.0)"
+  cors:
+    allowed-origins: ${QVIDEO_CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173}
